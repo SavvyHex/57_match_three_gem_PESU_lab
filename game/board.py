@@ -14,11 +14,11 @@ GEM_COLORS = [
 
 
 class Gem:
-   
-    def __init__(self, color, target_row, col):
+    def __init__(self, color, target_row, col, bomb_axis=None):
         self.color = color
         self.target_row = target_row
         self.col = col
+        self.bomb_axis = bomb_axis
         # Start higher up to animate falling down
         self.current_y = (target_row - 2) * TILE_SIZE
         self.target_y = target_row * TILE_SIZE
@@ -53,6 +53,8 @@ class Board:
         self.score = 0
         self.moves_remaining = self.max_moves
         self.selected = None
+        self.hint_pair = None
+        self.last_activity_ms = pygame.time.get_ticks()
         for r in range(GRID_SIZE):
             for c in range(GRID_SIZE):
                 color = random.choice(GEM_COLORS)
@@ -80,11 +82,13 @@ class Board:
 
         if self.grid[r1][c1]:
             self.grid[r1][c1].target_row = r1
+            self.grid[r1][c1].col = c1
             self.grid[r1][c1].target_y = r1 * TILE_SIZE
             self.grid[r1][c1].current_y = r1 * TILE_SIZE
 
         if self.grid[r2][c2]:
             self.grid[r2][c2].target_row = r2
+            self.grid[r2][c2].col = c2
             self.grid[r2][c2].target_y = r2 * TILE_SIZE
             self.grid[r2][c2].current_y = r2 * TILE_SIZE
 
@@ -94,34 +98,56 @@ class Board:
         return abs(r1 - r2) + abs(c1 - c2) == 1
 
     def find_matches(self):
-        """Scan grid for horizontal and vertical 3-in-a-row color matches."""
-        matched = set()
+        """Return every tile belonging to a horizontal or vertical match."""
+        groups = self._find_match_groups()
+        return set().union(*groups) if groups else set()
 
-        # Horizontal matches
+    def _find_match_groups(self):
+        groups = []
         for r in range(GRID_SIZE):
-            for c in range(GRID_SIZE - 2):
-                if (
-                    self.grid[r][c]
-                    and self.grid[r][c + 1]
-                    and self.grid[r][c + 2]
-                    and self.grid[r][c].color == self.grid[r][c + 1].color == self.grid[r][c + 2].color
-                ):
-                    matched.update([(r, c), (r, c + 1), (r, c + 2)])
+            c = 0
+            while c < GRID_SIZE:
+                start = c
+                gem = self.grid[r][c]
+                while c < GRID_SIZE and self.grid[r][c] and gem and self.grid[r][c].color == gem.color:
+                    c += 1
+                if c - start >= 3:
+                    groups.append({(r, column) for column in range(start, c)})
+                if c == start:
+                    c += 1
 
-        # Vertical matches
-        for r in range(GRID_SIZE - 2):
-            for c in range(GRID_SIZE):
-                if (
-                    self.grid[r][c]
-                    and self.grid[r + 1][c]
-                    and self.grid[r + 2][c]
-                    and self.grid[r][c].color == self.grid[r + 1][c].color == self.grid[r + 2][c].color
-                ):
-                    matched.update([(r, c), (r + 1, c), (r + 2, c)])
+        for c in range(GRID_SIZE):
+            r = 0
+            while r < GRID_SIZE:
+                start = r
+                gem = self.grid[r][c]
+                while r < GRID_SIZE and self.grid[r][c] and gem and self.grid[r][c].color == gem.color:
+                    r += 1
+                if r - start >= 3:
+                    groups.append({(row, c) for row in range(start, r)})
+                if r == start:
+                    r += 1
+        return groups
 
-        return matched
+    def _matched_with_bombs(self, matches):
+        expanded = set(matches)
+        for r, c in list(matches):
+            gem = self.grid[r][c]
+            if gem and gem.bomb_axis == "row":
+                expanded.update((r, column) for column in range(GRID_SIZE))
+            elif gem and gem.bomb_axis == "column":
+                expanded.update((row, c) for row in range(GRID_SIZE))
+        return expanded
+
+    def _create_bomb(self, position, color, axis):
+        r, c = position
+        bomb = Gem(color, r, c, bomb_axis=axis)
+        bomb.current_y = r * TILE_SIZE
+        bomb.target_y = r * TILE_SIZE
+        self.grid[r][c] = bomb
 
     def drop_and_refill(self):
+        for c in range(GRID_SIZE):
             empty_slots = 0
             for r in range(GRID_SIZE - 1, -1, -1):
                 if self.grid[r][c] is None:
@@ -130,6 +156,7 @@ class Board:
                     gem = self.grid[r][c]
                     gem.target_row = r + empty_slots
                     gem.target_y = (r + empty_slots) * TILE_SIZE
+                    gem.col = c
                     self.grid[r + empty_slots][c] = gem
                     self.grid[r][c] = None
 
@@ -139,16 +166,35 @@ class Board:
                 gem.current_y = -((empty_slots - r) * TILE_SIZE)
                 self.grid[r][c] = gem
 
-    def resolve_matches(self):
+    def resolve_matches(self, special_position=None):
         total_cleared = 0
+        total_score = 0
+        cascade = 0
+        pending_special = special_position
         while True:
-            matches = self.find_matches()
-            if not matches:
+            groups = self._find_match_groups()
+            if not groups:
                 break
-            total_cleared += len(matches)
+            cascade += 1
+            matches = self._matched_with_bombs(set().union(*groups))
+            bomb_group = next((group for group in groups if len(group) >= 4), None)
+            bomb_position = None
+            bomb_color = None
+            if bomb_group:
+                bomb_position = pending_special if pending_special in bomb_group else next(iter(bomb_group))
+                bomb_color = self.grid[bomb_position[0]][bomb_position[1]].color
+                pending_special = None
             for r, c in matches:
                 self.grid[r][c] = None
+            if bomb_position:
+                bomb_r, bomb_c = bomb_position
+                axis = "row" if len({r for r, _ in bomb_group}) == 1 else "column"
+                self._create_bomb(bomb_position, bomb_color, axis)
+            cleared_this_cascade = len(matches) - (1 if bomb_position else 0)
+            total_cleared += cleared_this_cascade
+            total_score += cleared_this_cascade * 10 * cascade
             self.drop_and_refill()
+        self.last_resolution_score = total_score
         return total_cleared
 
     def process_swap(self, pos1, pos2):
@@ -158,17 +204,32 @@ class Board:
         self.swap_gems(pos1, pos2)
         matches = self.find_matches()
 
-        # BUG SYMPTOM:
-        # Move count decrements on EVERY swap attempt even invalid ones.
-        self.moves_remaining -= 1
-
         if not matches:
             self.swap_gems(pos1, pos2)  # Revert invalid swap
             return False
 
-        cleared = self.resolve_matches()
-        self.score += cleared * 10
+        self.moves_remaining -= 1
+        self.resolve_matches(special_position=pos1)
+        self.score += self.last_resolution_score
+        self.register_activity()
         return True
+
+    def register_activity(self):
+        self.last_activity_ms = pygame.time.get_ticks()
+        self.hint_pair = None
+
+    def find_hint(self):
+        for r in range(GRID_SIZE):
+            for c in range(GRID_SIZE):
+                for other in ((r + 1, c), (r, c + 1)):
+                    if other[0] >= GRID_SIZE or other[1] >= GRID_SIZE:
+                        continue
+                    self.swap_gems((r, c), other)
+                    valid = bool(self.find_matches())
+                    self.swap_gems((r, c), other)
+                    if valid:
+                        return ((r, c), other)
+        return None
 
     def is_game_over(self):
         return self.score >= self.target_score or self.moves_remaining <= 0
@@ -185,6 +246,8 @@ class Board:
             for c in range(GRID_SIZE):
                 if self.grid[r][c]:
                     self.grid[r][c].update()
+        if self.hint_pair is None and pygame.time.get_ticks() - self.last_activity_ms > 5000:
+            self.hint_pair = self.find_hint()
 
     def render(self, surface):
         board_rect = pygame.Rect(
@@ -205,6 +268,14 @@ class Board:
                     pygame.draw.rect(
                         surface, (255, 255, 255), tile_rect, width=1, border_radius=10
                     )
+                    if gem.bomb_axis:
+                        pygame.draw.circle(
+                            surface,
+                            (255, 245, 150),
+                            tile_rect.center,
+                            TILE_SIZE // 4,
+                            width=3,
+                        )
 
                 if self.selected == (r, c):
                     sel_x = self.offset_x + c * TILE_SIZE
@@ -213,3 +284,12 @@ class Board:
                     pygame.draw.rect(
                         surface, (255, 255, 255), sel_rect, width=4, border_radius=10
                     )
+                if self.hint_pair and (r, c) in self.hint_pair:
+                    pulse = 2 + int((pygame.time.get_ticks() / 180) % 3)
+                    hint_rect = pygame.Rect(
+                        self.offset_x + c * TILE_SIZE + 5,
+                        self.offset_y + r * TILE_SIZE + 5,
+                        TILE_SIZE - 10,
+                        TILE_SIZE - 10,
+                    )
+                    pygame.draw.rect(surface, (255, 245, 120), hint_rect, width=pulse, border_radius=8)

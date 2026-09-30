@@ -1,4 +1,5 @@
 import pygame
+import pygame._freetype as freetype
 from game.board import Board, GRID_SIZE, TILE_SIZE
 
 
@@ -11,12 +12,14 @@ class GameEngine:
 
         self.board = Board(offset_x, offset_y, target_score=500, max_moves=20)
 
-        self.font_big = pygame.font.SysFont(None, 48)
-        self.font_small = pygame.font.SysFont(None, 24)
+        freetype.init()
+        self.font_big = freetype.Font(None, 48)
+        self.font_small = freetype.Font(None, 24)
 
     def handle_click(self, mouse_pos):
         if self.board.is_game_over() or self.board.is_animating():
             return
+        self.board.register_activity()
 
         mx, my = mouse_pos
         bx = mx - self.board.offset_x
@@ -45,20 +48,19 @@ class GameEngine:
     def render(self, screen):
         screen.fill((32, 34, 40))
 
-        title_surf = self.font_big.render("MATCH-3 GEM SWAP", True, (240, 240, 240))
+        title_surf, _ = self.font_big.render("MATCH-3 GEM SWAP", (240, 240, 240))
         screen.blit(title_surf, (self.width // 2 - title_surf.get_width() // 2, 10))
         hud_text = (
             f"SCORE: {self.board.score} / {self.board.target_score}   |   "
             f"MOVES LEFT: {self.board.moves_remaining}"
         )
-        hud_surf = self.font_small.render(hud_text, True, (80, 220, 180))
+        hud_surf, _ = self.font_small.render(hud_text, (80, 220, 180))
         screen.blit(hud_surf, (self.width // 2 - hud_surf.get_width() // 2, 55))
 
         self.board.render(screen)
 
-        inst_surf = self.font_small.render(
+        inst_surf, _ = self.font_small.render(
             "Swap gems to match 3+. Press [R] to Restart.",
-            True,
             (180, 180, 180),
         )
         screen.blit(
@@ -78,14 +80,14 @@ class GameEngine:
                 msg = "OUT OF MOVES!"
                 color = (240, 80, 80)
 
-            res_surf = self.font_big.render(msg, True, color)
+            res_surf, _ = self.font_big.render(msg, color)
             screen.blit(
                 res_surf,
                 (self.width // 2 - res_surf.get_width() // 2, self.height // 2 - 40),
             )
 
             sub_text = f"Final Score: {self.board.score}  |  Press [R] to Play Again"
-            sub_surf = self.font_small.render(sub_text, True, (220, 220, 220))
+            sub_surf, _ = self.font_small.render(sub_text, (220, 220, 220))
             screen.blit(
                 sub_surf,
                 (self.width // 2 - sub_surf.get_width() // 2, self.height // 2 + 10),
